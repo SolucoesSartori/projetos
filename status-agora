@@ -1,0 +1,23 @@
+#!/bin/bash
+
+# Cores
+AMARELO='\033[1;33m'
+AZUL='\033[0;34m'
+RESET='\033[0m'
+
+echo -e "${AZUL}=== STATUS ATUAL DO SISTEMA ===${RESET}"
+
+# Mostra quem está logado e há quanto tempo o PC está ligado
+echo -e "${AMARELO}> Sessão:${RESET} $(uptime -p)"
+
+# Mostra o IP local
+echo -e "${AMARELO}> IP Local:${RESET} $(hostname -I | awk '{print $1}')"
+
+# Mostra o consumo de CPU
+echo -e "${AMARELO}> Carga de CPU:${RESET} $(top -bn1 | grep "Cpu(s)" | awk '{print $2 + $4}')%"
+
+# Mostra os 3 processos que mais consomem memória no momento
+echo -e "\n${AMARELO}> Top 3 Processos (Memória):${RESET}"
+ps -eo pid,ppid,cmd,%mem --sort=-%mem | head -n 4
+
+echo -e "${AZUL}===============================${RESET}"

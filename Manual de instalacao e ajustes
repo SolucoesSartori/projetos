@@ -1,0 +1,260 @@
+
+
+#atualizar Debian 13 e ajustes iniciais
+
+
+
+SERVIDOR AD DC
+verifica r na instalcao novo isso: 
+O sistema de arquivos (EXT4) esteja montado com suporte explícito a ACL e User_Xattr.
+eu acho melhor ja colocar dentro de fstab acl attr
+# <device>                                 <mount point>  <type>  <options>                  <dump> <pass>
+UUID=seu-uuid-aqui-1234-5678-90abcdef1234  /mnt/dados     ext4    defaults,acl,user_xattr    0      2
+
+Ajustes de fixo do SAMBA AC DC
+ja determine um ip fixo
+auto ens33
+iface ens33 inet static
+    address 192.168.15.150
+    netmask 255.255.255.0
+    gateway 192.168.15.1
+    dns-nameservers 127.0.0.1 8.8.8.8
+
+# ajuste pre-preparo
+***********************************************
+eu me deparei com este erro que é proveniente de maquina virtual e se arruma facil
+journalctl -b -p err
+#abr 19 12:48:50 srv01.sucataswrs.loc.br kernel: piix4_smbus 0000:00:07.3: SMBus Host Controller n>
+so usar isso no vmware: 
+echo "blacklist i2c_piix4" | sudo tee /etc/modprobe.d/blacklist-piix4.confecho "blacklist i2c_piix4" | sudo tee /etc/modprobe.d/blacklist-piix4.conf
+sudo update-initramfs -u
+
+********************************************************************
+
+hostnamectl set-hostname srv01.sucataswrs.loc.br
+# editar /etc/hosts
+127.0.0.1       localhost
+192.168.15.150  srv01.sucataswrs.loc.br srv01 # seta o nome para poder pingar * nao responde o dominio mas esta tudo ok ate aqui-1234-5678-90abcdef1234
+
+# Atualização e Instalação de dependências robustas - este é o modo mais facil como apt get
+apt update && apt install -y samba smbclient krb5-config krb5-user \
+winbind libpam-winbind libnss-winbind acl attr python3-cryptography \
+dnsutils chrony rsyslog ldb-tools curl wget apt-transport-https \
+mc lastlog2 nmap
+
+***********************************************************************************************
+##### Modo Copilado completo / de preferencia, use o modo ape get qua é mais facil
+sudo apt install -y acl attr autoconf bind9-utils bison build-essential \
+  debhelper bind9-dnsutils docbook-xml docbook-xsl flex gdb git krb5-user \
+  libacl1-dev libarchive-dev libattr1-dev libavahi-client-dev libavahi-common-dev \
+  libblkid-dev libbsd-dev libcap-dev libcups2-dev libgnutls28-dev libgpgme-dev \
+  libicu-dev libjansson-dev libldap2-dev libncurses-dev libpam0g-dev \
+  libparse-yapp-perl libpopt-dev libreadline-dev libsystemd-dev libtasn1-bin \
+  libtasn1-6-dev libunwind-dev lmdb-utils locales lsb-release make perl \
+  perl-modules pkg-config python3-dev python3-dbg python3-dnspython \
+  python3-gpg python3-markdown python3-setuptools libtalloc-dev python3-talloc \
+  rng-tools-debian xsltproc zlib1g-dev liblmdb-dev chrony rsyslog apt-transport-https \
+  mc lastlog2 nmap curl
+  
+#######  
+***************************************************************************************************
+	
+# Configuração do Kerberos e:
+Default Kerberos version 5 realm (Reino Kerberos Padrão : dominio completo : SUCATASWRS.LOC.BR
+Kerberos servers for your realm (Servidores Kerberos) : somente o nome do servidor: SRV01 * tudo maiusculo
+Administrative server for your realm (Servidor Administrativo : SRV01
+ # para estes serviços que sao para samba clint
+ # tiro da inicialiação
+  # aponto todos para /dev/null 
+systemctl stop smbd nmbd winbind
+systemctl disable smbd nmbd winbind
+systemctl mask smbd nmbd winbind
+mv /etc/samba/smb.conf /etc/samba/smb.conf.original
+
+samba-tool domain provision --use-rfc2307 --interactive --realm=SUCATASWRS.LOC.BR --domain=SUCATASWRS
+
+cp /var/lib/samba/private/krb5.conf /etc/krb5.conf
+
+nano /etc/resolv.conf
+domain sucataswrs.loc.br
+search sucataswrs.loc.br
+nameserver 127.0.0.1
+chattr +i /etc/resolv.conf # torna imutavel
+
+ # unmask para deixar abilitavel :poder aplicar o enable
+systemctl unmask samba-ad-dc
+systemctl enable samba-ad-dc
+systemctl start samba-ad-dc
+systemctl status samba-ad-dc
+
+Realize os testes para confirmar que o Samba e o Kerberos estão respondendo corretamente:
+
+smbclient -L localhost -U%
+kinit administrator
+klist
+host -t SRV _ldap._tcp.sucataswrs.loc.br
+
+***************************************************************************************
+se voce esta lendo isso vc se fudeu, kkkkkkk, recopila o debian novaente, é mais rapido, kkkkkk
+Obs: caso a senha so administrator tenha errado , usar em : /usr/sbin/kadmin.local
+	kadmin.local
+		dentro:	list_principals # mostra usuarios do dominio
+				cpw usuario_/admin
+				exit  
+				kkkkkk, nada disso funcina porque o kadmin.loc procura um banco de dados que nao existe
+				este servidor neste momento esta como Samba AD
+				voce pode tentar: samba-tool user setpassword administrator
+*********************************************************************************				
+acertar servidor de NTP
+nano /etc/chrony/chrony.conf
+pool a.st1.ntp.br iburst 
+ntpsigndsocket /var/lib/samba/ntp_signd 
+allow 192.168.15.0/24 
+
+sudo chown root:_chrony /var/lib/samba/ntp_signd/
+sudo chmod 750 /var/lib/samba/ntp_signd/
+sudo systemctl restart chronyd
+sudo systemctl restart samba-ad-dc
+sudo systemctl status samba-ad-dc chronyd
+
+verifica status do samba como servidor
+samba-tool domain level show
+
+Elevar o niovel do servidor para SERVER 2016 , neste momento ele esta como Windows Server 2008R
+editar o /etc/samba/smb.conf
+Adicione a seguinte linha logo abaixo da tag [global]:
+
+[global]
+        ad dc functional level = 2016
+		
+agora execute:		
+samba-tool domain schemaupgrade --schema=2019
+samba-tool domain functionalprep --function-level=2016
+samba-tool domain level raise --domain-level=2016 --forest-level=2016
+
+confere e ver se subiu par windows 2016
+
+
+
+
+**************************************************
+ outro tipo de tentativa
+ ************************************************
+2. Provisionamento do Domínio
+Este comando cria o banco de dados do AD do zero. Escolha uma senha forte para o Administrator (mínimo 8 caracteres, letras e números).
+
+# Remove o smb.conf padrão se existir para o provisionamento criar um novo
+rm -f /etc/samba/smb.conf
+
+samba-tool domain provision \
+  --realm=SUCATASWRS.LOC.BR \
+  --domain=SUCATASWRS \
+  --server-role=dc \
+  --dns-backend=SAMBA_INTERNAL \
+  --adminpass='Peninha111@' \
+  --use-rfc2307
+  
+ 3. Configuração do Kerberos e DNS
+O AD depende totalmente desses dois itens para o Windows conseguir logar.
+# Link do Kerberos gerado pelo Samba para o sistema
+cp /var/lib/samba/private/krb5.conf /etc/krb5.conf
+
+# Faz o servidor olhar para o seu próprio DNS interno do Samba
+echo "nameserver 127.0.0.1" > /etc/resolv.conf
+echo "domain sucataswrs.loc.br" >> /etc/resolv.conf
+
+4. Ativação do Serviço AD DC
+No modo Controlador de Domínio, o serviço samba-ad-dc gerencia tudo (SMB, DNS e Kerberos).
+systemctl unmask samba-ad-dc
+systemctl enable samba-ad-dc
+systemctl start samba-ad-dc
+
+
+
+pulo do gato
+# 1. Define o grupo 'administrativo' como dono do grupo da pasta
+sudo chown -R root:"administrativo" /srv/samba/administrativo
+
+criar varios diretoris ao mesmo tempo 
+
+mkdir -p /srv/samba/{administrativo,rh,financeiro}
+
+# 2. Dá permissão total (leitura, escrita e execução) para o grupo
+sudo chmod -R 770 /srv/samba/administrativo
+
+2. Ajuste de ACLs do Windows (O "Pulo do Gato")
+# Ajustar permissões de dono (Root e Administradores do Domínio)
+chown -R root:"domain admins" /srv/samba/
+chmod -R 770 /srv/samba/
+
+****raciocinio logico
+Criar OUs (Unidades Organizacionais) é o que separa um servidor amador de um profissional. 
+Elas funcionam como "pastas" dentro do banco de dados do AD, permitindo que você 
+organize usuários e aplique políticas (GPOs) específicas para cada setor no futuro
+1. Criando as Unidades Organizacionais (OUs)
+Vamos criar uma OU principal para a empresa e sub-OUs para os departamentos:
+# Cria a OU principal da Empresa
+samba-tool ou create "OU=SUCATASWRS,DC=sucataswrs,DC=loc,DC=br"
+
+# Cria as Sub-OUs dos Departamentos
+samba-tool ou create "OU=Administrativo,OU=SUCATASWRS,DC=sucataswrs,DC=loc,DC=br"
+samba-tool ou create "OU=RH,OU=SUCATASWRS,DC=sucataswrs,DC=loc,DC=br"
+samba-tool ou create "OU=Financeiro,OU=SUCATASWRS,DC=sucataswrs,DC=loc,DC=br"
+
+2. Criando os Grupos dentro das OUs
+Agora, em vez de ficarem na pasta padrão "Users", os grupos ficarão organizados em suas respectivas OUs:
+samba-tool group add administrativo --groupou="OU=Administrativo,OU=SUCATASWRS"
+samba-tool group add rh --groupou="OU=RH,OU=SUCATASWRS"
+samba-tool group add financeiro --groupou="OU=Financeiro,OU=SUCATASWRS"
+
+3. Criando os Usuários dentro das OUs
+Vamos criar os usuários iniciais já posicionados em seus devidos lugares:
+bash
+# Criar Priscila no Administrativo
+samba-tool user create priscila.admin 'SuaSenhaForte123' --userou="OU=Administrativo,OU=SUCATASWRS"
+
+# Criar um usuário no RH para teste
+samba-tool user create maria.rh 'SuaSenhaForte123' --userou="OU=RH,OU=SUCATASWRS"
+
+# Criar um usuário no Financeiro para teste
+samba-tool user create carlos.fin 'SuaSenhaForte123' --userou="OU=Financeiro,OU=S
+
+4. Vinculando Usuários aos Grupos
+bash
+samba-tool group addmembers administrativo priscila.admin
+samba-tool group addmembers rh maria.rh
+samba-tool group addmembers financeiro carlos.fin
+
+5. Preparando as Pastas no /srv (Com a nova estrutura)
+Lembra que criamos a partição /srv separada? Vamos preparar os diretórios e aplicar as ACLs que garantem o acesso:
+bash
+# Criar diretórios
+mkdir -p /srv/samba/administrativo
+mkdir -p /srv/samba/rh
+mkdir -p /srv/samba/financeiro
+# Ajustar permissões de dono (Root e Administradores do Domínio)
+chown -R root:"domain admins" /srv/samba/
+chmod -R 770 /srv/samba/
+
+# Aplicar ACLs específicas para cada grupo (Garante que um setor não veja o outro)
+setfacl -R -m g:"SUCATASWRS\administrativo":rwx /srv/samba/administrativo
+setfacl -R -d -m g:"SUCATASWRS\administrativo":rwx /srv/samba/administrativo
+
+setfacl -R -m g:"SUCATASWRS\rh":rwx /srv/samba/rh
+setfacl -R -d -m g:"SUCATASWRS\rh":rwx /srv/samba/rh
+
+setfacl -R -m g:"SUCATASWRS\financeiro":rwx /srv/samba/financeiro
+setfacl -R -d -m g:"SUCATASWRS\financeiro":rwx /srv/samba/financeiro
+
+
+# O Samba AD DC usa ACLs do Windows. Às vezes, mesmo com permissão no Linux, o AD bloqueia o acesso "NTFS". Vamos forçar a permissão para o grupo via terminal:
+# Adiciona permissão de modificação para o grupo administrativo na pasta
+sudo setfacl -R -m g:"administrativo":rwx /srv/samba/administrativo
+# Garante que novos arquivos criados também herdem essa permissão
+sudo setfacl -R -d -m g:"administrativo":rwx /srv/samba/administrativo
+
+# ajuste para o webmin no repository e chave key
+	
+echo "deb http://download.webmin.com/download/repository sarge contrib" | sudo tee /etc/apt/sources.list.d/webmin.list
+sudo curl -o /usr/share/keyrings/webmin-archive-keyring.gpg https://webmin.com
+wget -qO- https://download.webmin.com/jcameron-key.asc | sudo tee /etc/apt/trusted.gpg.d/jcameron-key.asc
